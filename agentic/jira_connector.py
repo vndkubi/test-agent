@@ -76,7 +76,7 @@ class JiraConnector:
             labels=list(issue.fields.labels) if issue.fields.labels else [],
             assignee=str(issue.fields.assignee) if issue.fields.assignee else None,
             reporter=str(issue.fields.reporter) if issue.fields.reporter else "Unknown",
-            url=f"{jira_config.server}/browse/{issue.key}"
+            url=f"{jira_config.server.rstrip('/')}/browse/{issue.key}"
         )
     
     def _parse_acceptance_criteria(self, description: str) -> list[str]:

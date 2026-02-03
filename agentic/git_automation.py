@@ -223,6 +223,31 @@ _This PR was created by Agentic Workflow Tool_
         """Check if there are uncommitted changes."""
         success, output = self._run_command(["git", "status", "--porcelain"])
         return bool(output.strip()) if success else False
+    
+    def checkout_branch(self, branch_name: str) -> bool:
+        """Checkout an existing branch."""
+        # Fetch first to ensure we have latest
+        self._run_command(["git", "fetch", "origin"], check=False)
+        
+        # Try checkout
+        success, error = self._run_command(
+            ["git", "checkout", branch_name],
+            check=False
+        )
+        
+        if not success:
+            # Try checkout tracking remote
+            success, error = self._run_command(
+                ["git", "checkout", "-b", branch_name, f"origin/{branch_name}"],
+                check=False
+            )
+        
+        return success
+    
+    def get_last_commit_hash(self) -> str:
+        """Get the short hash of the last commit."""
+        success, output = self._run_command(["git", "rev-parse", "--short", "HEAD"])
+        return output if success else "unknown"
 
 
 git_automation = GitAutomation()

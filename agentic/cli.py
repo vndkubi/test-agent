@@ -352,18 +352,38 @@ def run_pr_review(pr_id: str, working_dir: Optional[Path] = None):
 
 
 def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_dir: Optional[Path] = None):
-    """Fix PR comments."""
+    """Fix PR comments - switch to PR branch, apply fix, commit, push, and reply."""
     working_dir = working_dir or Path.cwd()
     pr_review_manager.working_dir = working_dir
     pr_review_manager.fetcher.working_dir = working_dir
     auto_fixer.working_dir = working_dir
+    git_automation.set_working_dir(working_dir)
     
     console.print(Panel.fit(
         "[bold blue]🔧 PR Fix Mode[/bold blue]",
         border_style="blue"
     ))
     
-    # Analyze PR first
+    # Get PR info including branch
+    pr_info = pr_review_manager.fetcher.get_pr_by_number(int(pr_id))
+    if not pr_info:
+        console.print(f"[red]✗[/red] Could not find PR #{pr_id}")
+        return False
+    
+    pr_branch = pr_info.get("headRefName")
+    pr_title = pr_info.get("title", "")
+    console.print(f"[green]✓[/green] Found PR #{pr_id}: {pr_title}")
+    console.print(f"[dim]  Branch: {pr_branch}[/dim]")
+    
+    # Switch to PR branch
+    current_branch = git_automation.get_current_branch()
+    if current_branch != pr_branch:
+        console.print(f"[cyan]→[/cyan] Switching to branch: {pr_branch}")
+        if not git_automation.checkout_branch(pr_branch):
+            console.print(f"[red]✗[/red] Failed to checkout {pr_branch}")
+            return False
+    
+    # Analyze PR
     summary = pr_review_manager.analyze_pr(pr_id)
     if not summary:
         return False
@@ -392,13 +412,30 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
     
     successful = [f for f in fixes if f.success]
     if successful and not dry_run:
-        # Commit changes
-        if Confirm.ask("\nCommit fixes?"):
-            msg = auto_fixer.generate_fix_commit_message(fixes)
-            git_automation.set_working_dir(working_dir)
-            git_automation.commit_changes(pr_id, msg)
-            git_automation.push_branch()
-            console.print("[green]✓[/green] Fixes committed and pushed")
+        # Auto commit and push
+        commit_msg = auto_fixer.generate_fix_commit_message(fixes)
+        
+        if auto or Confirm.ask("\nCommit and push fixes?"):
+            # Stage and commit
+            git_automation.commit_changes(f"PR-{pr_id}", commit_msg)
+            
+            # Push to PR branch
+            if git_automation.push_branch():
+                console.print(f"[green]✓[/green] Fixes committed and pushed to {pr_branch}")
+                
+                # Reply to PR comments
+                if auto or Confirm.ask("Reply to PR comments?"):
+                    commit_hash = git_automation.get_last_commit_hash()
+                    for fix in successful:
+                        reply_body = f"Fixed in commit {commit_hash}: {fix.message}"
+                        pr_review_manager.fetcher.reply_to_comment(
+                            int(pr_id), 
+                            fix.comment.id, 
+                            reply_body
+                        )
+                    console.print(f"[green]✓[/green] Replied to {len(successful)} comments")
+            else:
+                console.print("[red]✗[/red] Failed to push")
     
     return True
 

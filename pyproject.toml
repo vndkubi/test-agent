@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-workflow"
+version = "1.0.0"
+description = "Automated dev workflow: Jira → TDD → PR → Done"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "jira>=3.5.0",
+    "python-dotenv>=1.0.0",
+    "rich>=13.0.0",
+]
+
+[project.scripts]
+agentic = "agentic.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agentic*", "config*"]

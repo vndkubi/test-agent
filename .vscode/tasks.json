@@ -1,0 +1,86 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "🚀 Run Workflow",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "workflow.py",
+                "${input:pbiKey}"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "🧪 Run Workflow (Test Mode)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "workflow.py",
+                "${input:pbiKey}",
+                "--skip-jira"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "📋 Run Workflow (Draft PR)",
+            "type": "shell",
+            "command": "python",
+            "args": [
+                "workflow.py",
+                "${input:pbiKey}",
+                "--draft"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": [],
+            "presentation": {
+                "echo": true,
+                "reveal": "always",
+                "focus": true,
+                "panel": "dedicated"
+            }
+        },
+        {
+            "label": "📦 Install Dependencies",
+            "type": "shell",
+            "command": "pip",
+            "args": [
+                "install",
+                "-r",
+                "requirements.txt"
+            ],
+            "options": {
+                "cwd": "${workspaceFolder}"
+            },
+            "problemMatcher": []
+        }
+    ],
+    "inputs": [
+        {
+            "id": "pbiKey",
+            "type": "promptString",
+            "description": "Enter Jira PBI Key (e.g., PBI-123)",
+            "default": "PBI-"
+        }
+    ]
+}

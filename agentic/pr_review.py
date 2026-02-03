@@ -98,11 +98,13 @@ class PRReviewFetcher:
                 cwd=self.working_dir,
                 capture_output=True,
                 text=True,
+                encoding='utf-8',
+                errors='replace',
                 check=True
             )
-            return True, result.stdout.strip()
+            return True, result.stdout.strip() if result.stdout else ""
         except subprocess.CalledProcessError as e:
-            return False, e.stderr.strip()
+            return False, e.stderr.strip() if e.stderr else str(e)
         except FileNotFoundError:
             return False, "gh CLI not found"
     

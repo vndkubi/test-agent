@@ -133,8 +133,19 @@ class GitAutomation:
         else:
             return False, output
     
+    def has_remote(self) -> bool:
+        """Check if repository has a remote configured."""
+        success, output = self._run_command(["git", "remote"], check=False)
+        return success and bool(output.strip())
+    
     def push_branch(self, branch_name: Optional[str] = None) -> Tuple[bool, str]:
         """Push current or specified branch to origin."""
+        # Check if remote exists
+        if not self.has_remote():
+            console.print("[red]✗[/red] No git remote configured!")
+            console.print("[yellow]Tip: Add a remote with: git remote add origin <url>[/yellow]")
+            return False, "No remote configured"
+        
         branch = branch_name or self.get_current_branch()
         
         success, output = self._run_command(
@@ -153,6 +164,12 @@ class GitAutomation:
         """Create a GitHub Pull Request with Jira content."""
         if not self.check_gh_cli():
             return False, "gh CLI not available"
+        
+        # Check if remote exists
+        if not self.has_remote():
+            console.print("[red]✗[/red] No git remote configured - cannot create PR!")
+            console.print("[yellow]Tip: Add a remote with: git remote add origin https://github.com/user/repo.git[/yellow]")
+            return False, "No remote configured"
         
         title = f"[{pbi.key}] {pbi.summary}"
         body = self._build_pr_body(pbi)

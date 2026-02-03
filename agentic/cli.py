@@ -4,11 +4,15 @@ Agentic Development Workflow CLI
 
 Usage:
     agentic <PBI-KEY> [options]
+    agentic todo <PBI-KEY>              # Interactive TODO manager
+    agentic pr review <PR>              # Analyze PR comments
+    agentic pr fix <PR> [--auto]        # Fix PR comments
     
 Examples:
     agentic PBI-123
     agentic SCRUM-456 --draft
-    agentic PBI-789 --skip-jira
+    agentic pr review 42
+    agentic pr fix 42 --auto
 """
 
 import sys
@@ -18,11 +22,15 @@ from typing import Optional
 
 from rich.console import Console
 from rich.panel import Panel
+from rich.table import Table
 from rich.prompt import Prompt, Confirm
 
 from .jira_connector import jira_connector, PBIData
-from .context_generator import context_generator
+from .enhanced_context_generator import enhanced_context_generator
 from .git_automation import git_automation
+from .todo_manager import todo_manager
+from .pr_review import pr_review_manager, PRReviewSummary
+from .auto_fixer import auto_fixer
 
 console = Console()
 
@@ -216,14 +224,34 @@ def run_workflow(
 
 def main():
     """Main entry point."""
+    # Check for subcommands first
+    if len(sys.argv) > 1:
+        if sys.argv[1] == "todo":
+            # Handle todo subcommand
+            todo_parser = argparse.ArgumentParser(prog="agentic todo")
+            todo_parser.add_argument("pbi_key", help="Jira issue key")
+            todo_parser.add_argument("-i", "--interactive", action="store_true")
+            todo_parser.add_argument("--dir", "-d", type=Path, default=None)
+            args = todo_parser.parse_args(sys.argv[2:])
+            action = "interactive" if args.interactive else "show"
+            success = run_todo(args.pbi_key, args.dir, action)
+            sys.exit(0 if success else 1)
+        
+        elif sys.argv[1] == "pr":
+            handle_pr_command()
+    
+    # Main workflow parser
     parser = argparse.ArgumentParser(
         description="Agentic Development Workflow",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-    agentic PBI-123
-    agentic SCRUM-456 --draft
-    agentic PBI-789 --skip-jira
+    agentic PBI-123              # Run full workflow
+    agentic SCRUM-456 --draft    # Create draft PR
+    agentic todo SCRUM-123       # Show TODO list
+    agentic todo SCRUM-123 -i    # Interactive TODO
+    agentic pr review 42         # Analyze PR comments
+    agentic pr fix 42 --auto     # Auto-fix PR comments
     
 Config: ~/.agentic/.env or .env in current directory
         """
@@ -256,7 +284,7 @@ Config: ~/.agentic/.env or .env in current directory
     parser.add_argument(
         "--version", "-v",
         action="version",
-        version="agentic 1.0.0"
+        version="agentic 1.2.0"
     )
     
     args = parser.parse_args()
@@ -269,6 +297,143 @@ Config: ~/.agentic/.env or .env in current directory
     )
     
     sys.exit(0 if success else 1)
+
+
+# ============================================
+# PR Review Commands
+# ============================================
+
+def run_pr_review(pr_id: str, working_dir: Optional[Path] = None):
+    """Analyze PR comments."""
+    working_dir = working_dir or Path.cwd()
+    pr_review_manager.working_dir = working_dir
+    pr_review_manager.fetcher.working_dir = working_dir
+    
+    console.print(Panel.fit(
+        "[bold blue]📝 PR Review Analysis[/bold blue]",
+        border_style="blue"
+    ))
+    
+    # Analyze PR
+    summary = pr_review_manager.analyze_pr(pr_id)
+    if not summary:
+        return False
+    
+    # Show summary table
+    table = Table(title=f"PR #{summary.pr_number}: {summary.pr_title[:50]}")
+    table.add_column("Category", style="cyan")
+    table.add_column("Count", justify="right")
+    table.add_column("Action")
+    
+    table.add_row("🤖 Auto-fixable", str(len(summary.auto_fixable)), "agentic pr fix --auto")
+    table.add_row("🔧 Simple fixes", str(len(summary.simple_fixes)), "Quick manual fix")
+    table.add_row("🔨 Complex fixes", str(len(summary.complex_fixes)), "Use Copilot")
+    table.add_row("💬 Discussions", str(len(summary.discussions)), "Reply needed")
+    table.add_row("✅ Resolved", str(len(summary.resolved)), "No action")
+    
+    console.print(table)
+    
+    # Generate context files
+    context_file = pr_review_manager.generate_review_context(summary, working_dir)
+    console.print(f"\n[green]✓[/green] Context generated: {context_file.relative_to(working_dir)}")
+    
+    # Show next steps
+    if summary.auto_fixable:
+        console.print(f"\n[yellow]→[/yellow] Run [bold]agentic pr fix {pr_id} --auto[/bold] to auto-fix {len(summary.auto_fixable)} issues")
+    
+    if summary.complex_fixes:
+        console.print(f"[yellow]→[/yellow] Open [bold].copilot/pr-{summary.pr_number}/fixes.md[/bold] for Copilot prompts")
+    
+    if summary.discussions:
+        console.print(f"[yellow]→[/yellow] Review [bold].copilot/pr-{summary.pr_number}/discussions.md[/bold] for replies")
+    
+    return True
+
+
+def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_dir: Optional[Path] = None):
+    """Fix PR comments."""
+    working_dir = working_dir or Path.cwd()
+    pr_review_manager.working_dir = working_dir
+    pr_review_manager.fetcher.working_dir = working_dir
+    auto_fixer.working_dir = working_dir
+    
+    console.print(Panel.fit(
+        "[bold blue]🔧 PR Fix Mode[/bold blue]",
+        border_style="blue"
+    ))
+    
+    # Analyze PR first
+    summary = pr_review_manager.analyze_pr(pr_id)
+    if not summary:
+        return False
+    
+    if not summary.auto_fixable and not summary.simple_fixes:
+        console.print("[yellow]No auto-fixable comments found[/yellow]")
+        return True
+    
+    # Show what will be fixed
+    console.print(f"\n[bold]Auto-fixable ({len(summary.auto_fixable)}):[/bold]")
+    for c in summary.auto_fixable:
+        console.print(f"  • {c.file_path}:{c.line} - {c.suggested_fix or c.body[:50]}")
+    
+    if not auto:
+        if not Confirm.ask("\nApply these fixes?"):
+            return False
+    
+    # Apply fixes
+    fixes = auto_fixer.apply_fixes(summary.auto_fixable, dry_run=dry_run)
+    
+    # Show results
+    console.print(f"\n[bold]Results:[/bold]")
+    for fix in fixes:
+        status = "[green]✓[/green]" if fix.success else "[red]✗[/red]"
+        console.print(f"  {status} {fix.file_path} - {fix.message}")
+    
+    successful = [f for f in fixes if f.success]
+    if successful and not dry_run:
+        # Commit changes
+        if Confirm.ask("\nCommit fixes?"):
+            msg = auto_fixer.generate_fix_commit_message(fixes)
+            git_automation.set_working_dir(working_dir)
+            git_automation.commit_changes(pr_id, msg)
+            git_automation.push_branch()
+            console.print("[green]✓[/green] Fixes committed and pushed")
+    
+    return True
+
+
+def handle_pr_command():
+    """Handle pr subcommand."""
+    if len(sys.argv) < 3:
+        console.print("Usage: agentic pr <review|fix> <PR>")
+        sys.exit(1)
+    
+    action = sys.argv[2]
+    
+    if action == "review":
+        parser = argparse.ArgumentParser(prog="agentic pr review")
+        parser.add_argument("pr_id", help="PR number or branch name")
+        parser.add_argument("--dir", "-d", type=Path, default=None)
+        args = parser.parse_args(sys.argv[3:])
+        
+        success = run_pr_review(args.pr_id, args.dir)
+        sys.exit(0 if success else 1)
+    
+    elif action == "fix":
+        parser = argparse.ArgumentParser(prog="agentic pr fix")
+        parser.add_argument("pr_id", help="PR number or branch name")
+        parser.add_argument("--auto", action="store_true", help="Auto-apply without confirmation")
+        parser.add_argument("--dry-run", action="store_true", help="Show what would be done")
+        parser.add_argument("--dir", "-d", type=Path, default=None)
+        args = parser.parse_args(sys.argv[3:])
+        
+        success = run_pr_fix(args.pr_id, args.auto, args.dry_run, args.dir)
+        sys.exit(0 if success else 1)
+    
+    else:
+        console.print(f"Unknown pr command: {action}")
+        console.print("Available: review, fix")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

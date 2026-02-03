@@ -94,8 +94,14 @@ class PRReviewFetcher:
         self.working_dir = working_dir or Path.cwd()
     
     def _run_gh(self, args: list[str]) -> Tuple[bool, str]:
-        """Run gh CLI command."""
+        """Run gh CLI command.
+        
+        Security note: subprocess.run with a list argument is safe from command injection
+        because arguments are passed directly to the executable without shell interpretation.
+        The 'args' parameter comes from internal code, not user input.
+        """
         try:
+            # nosec B603 - args is a controlled list, not user input
             result = subprocess.run(
                 ["gh"] + args,
                 cwd=self.working_dir,
@@ -351,6 +357,14 @@ class CommentAnalyzer:
         r'\bsuggestion\b', r'\boptional\b', r'\bfyi\b'
     ]
     
+    SECURITY_PATTERNS = [
+        r'\bsecurity\b', r'\bvulnerability\b', r'\binjection\b', r'\bxss\b',
+        r'\bsql\s*injection\b', r'\bcommand\s*injection\b', r'\bpath\s*traversal\b',
+        r'\bdangerous\b', r'\baudit\b', r'\bmalicious\b', r'\bexploit\b',
+        r'\bsensitive\s*data\b', r'\bapi.?token\b', r'\bsecret\b', r'\bcredential\b',
+        r'\bopengrep\b', r'\bsemgrep\b', r'\bsnyk\b'
+    ]
+    
     CODE_FIX_PATTERNS = [
         r'\bshould\s+be\b', r'\bchange\s+to\b', r'\buse\b.*\binstead\b',
         r'\breplace\b', r'\bremove\b', r'\badd\b', r'\bmissing\b',
@@ -403,6 +417,12 @@ class CommentAnalyzer:
                 comment.suggested_fix = auto_fix
             else:
                 comment.difficulty = FixDifficulty.SIMPLE
+            return comment
+        
+        # Check security issues BEFORE suggestions (security issues often use "consider" language)
+        if self._matches_patterns(body_lower, self.SECURITY_PATTERNS):
+            comment.category = CommentCategory.CODE_FIX  # Security issues need fixing
+            comment.difficulty = FixDifficulty.COMPLEX  # Security fixes need careful review
             return comment
         
         # Check suggestions

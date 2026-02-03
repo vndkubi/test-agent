@@ -384,7 +384,7 @@ def run_pr_review(pr_id: str, working_dir: Optional[Path] = None):
 
 
 def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_dir: Optional[Path] = None):
-    """Fix PR comments."""
+    """Fix PR comments - interactive mode showing ALL comments."""
     working_dir = working_dir or Path.cwd()
     pr_review_manager.working_dir = working_dir
     pr_review_manager.fetcher.working_dir = working_dir
@@ -400,76 +400,146 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
     if not summary:
         return False
     
-    all_comments = summary.auto_fixable + summary.simple_fixes
+    # Get ALL fixable comments (auto + simple + complex)
+    all_fixable = summary.auto_fixable + summary.simple_fixes + summary.complex_fixes
     
-    # Separate by status
-    needs_rework = [c for c in all_comments if c.needs_rework]
-    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed and not c.needs_rework]
-    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed and not c.needs_rework]
-    skipped = [c for c in all_comments if c.is_fixed]
-    
-    # Show rework needed FIRST (high priority!)
-    if needs_rework:
-        console.print(f"\n[bold red]⚠️  NEEDS REWORK ({len(needs_rework)}):[/bold red]")
-        for c in needs_rework:
-            console.print(f"  [red]•[/red] {c.file_path}:{c.line}")
-            console.print(f"    [dim]Original: {c.body[:60]}...[/dim]")
-            if c.replies:
-                latest = c.replies[-1] if isinstance(c.replies[-1], dict) else {"body": str(c.replies[-1])}
-                body = latest.get("body", str(latest))[:80]
-                console.print(f"    [yellow]Feedback: {body}...[/yellow]")
-        console.print(f"\n[red]→ Please fix these manually based on reviewer feedback![/red]")
-    
-    # Show skipped (already fixed) comments
-    if skipped:
-        console.print(f"\n[dim]Skipped (already fixed): {len(skipped)} comments[/dim]")
-    
-    if not pending_auto and not pending_simple:
-        if needs_rework:
-            console.print("\n[yellow]No new auto-fixable comments. Fix rejected ones manually.[/yellow]")
-        else:
-            console.print("[green]✓[/green] All fixable comments have been addressed!")
+    if not all_fixable:
+        console.print("[green]✓[/green] No fixable comments found!")
         return True
     
-    # Show what will be fixed
-    console.print(f"\n[bold]Pending auto-fixable ({len(pending_auto)}):[/bold]")
-    for c in pending_auto:
-        console.print(f"  • {c.file_path}:{c.line} - {c.suggested_fix or c.body[:50]}")
+    # Show ALL comments with status
+    console.print(f"\n[bold]All Review Comments ({len(all_fixable)}):[/bold]\n")
     
-    if not auto:
-        if not Confirm.ask("\nApply these fixes?"):
-            return False
+    to_fix = []  # Comments user wants to fix
+    to_skip = []  # Comments user wants to skip with feedback
     
-    # Apply fixes (only pending ones, not rework)
-    fixes = auto_fixer.apply_fixes(pending_auto, dry_run=dry_run)
+    for i, c in enumerate(all_fixable, 1):
+        # Status indicator
+        if c.is_fixed:
+            status = "[green]✓ FIXED[/green]"
+        elif c.needs_rework:
+            status = "[red]⚠ REWORK[/red]"
+        else:
+            status = "[yellow]● PENDING[/yellow]"
+        
+        # Difficulty badge
+        diff_badge = {
+            "auto": "[green]AUTO[/green]",
+            "simple": "[cyan]SIMPLE[/cyan]",
+            "complex": "[magenta]COMPLEX[/magenta]",
+            "discussion": "[blue]DISCUSS[/blue]"
+        }.get(c.difficulty.value, "[dim]?[/dim]")
+        
+        console.print(f"[bold]#{i}[/bold] {status} {diff_badge}")
+        console.print(f"   📁 {c.file_path}:{c.line or '?'}")
+        console.print(f"   💬 {c.body[:100]}{'...' if len(c.body) > 100 else ''}")
+        
+        if c.suggested_fix:
+            console.print(f"   [green]→ Suggestion: {c.suggested_fix}[/green]")
+        
+        if c.replies:
+            latest = c.replies[-1] if isinstance(c.replies[-1], dict) else {"body": str(c.replies[-1])}
+            body = latest.get("body", str(latest))[:60]
+            console.print(f"   [dim]Latest reply: {body}...[/dim]")
+        
+        console.print()
+        
+        # In auto mode, fix all pending auto-fixable
+        if auto:
+            if not c.is_fixed and c.difficulty.value == "auto":
+                to_fix.append(c)
+            continue
+        
+        # Interactive: ask for each pending comment
+        if not c.is_fixed:
+            console.print(f"   [dim](f=fix, s=skip+comment, c=copy prompt, n=next)[/dim]")
+            action = Prompt.ask(
+                f"   Action for #{i}",
+                choices=["f", "s", "c", "n"],
+                default="n",
+            )
+            
+            if action == "f":
+                to_fix.append(c)
+                console.print("   [green]→ Will fix[/green]\n")
+            elif action == "s":
+                feedback = Prompt.ask("   Feedback comment", default="Won't fix - not applicable")
+                to_skip.append((c, feedback))
+                console.print("   [yellow]→ Will comment[/yellow]\n")
+            elif action == "c":
+                # Copy Copilot prompt to clipboard
+                prompt = f"@workspace Fix this review comment in {c.file_path}:\n\"{c.body[:200]}\""
+                console.print(f"\n   [cyan]Copilot prompt:[/cyan]\n   {prompt}\n")
     
-    # Show results
-    console.print(f"\n[bold]Results:[/bold]")
-    for fix in fixes:
-        status = "[green]✓[/green]" if fix.success else "[red]✗[/red]"
-        console.print(f"  {status} {fix.file_path} - {fix.message}")
+    # Summary
+    # Separate auto-fixable vs complex (need manual/Copilot)
+    auto_fixable = [c for c in to_fix if c.difficulty.value in ("auto", "simple")]
+    complex_fixes = [c for c in to_fix if c.difficulty.value == "complex"]
     
-    successful = [f for f in fixes if f.success]
-    if successful and not dry_run:
-        # Commit changes
+    console.print(f"\n[bold]Summary:[/bold]")
+    console.print(f"  Auto-fixable: {len(auto_fixable)}")
+    console.print(f"  Complex (Copilot): {len(complex_fixes)}")
+    console.print(f"  Skip with comment: {len(to_skip)}")
+    
+    if not auto_fixable and not to_skip and not complex_fixes:
+        console.print("\n[dim]No actions selected.[/dim]")
+        return True
+    
+    # Show Copilot prompts for complex fixes
+    if complex_fixes:
+        console.print(f"\n[bold magenta]📋 Complex fixes - use Copilot:[/bold magenta]")
+        for c in complex_fixes:
+            prompt = f'@workspace Fix this review comment in {c.file_path}:\n"{c.body[:150]}..."'
+            console.print(f"\n[cyan]{c.file_path}:{c.line}[/cyan]")
+            console.print(f"[dim]{prompt}[/dim]")
+        console.print("\n[yellow]→ Copy prompts above and use with GitHub Copilot[/yellow]")
+    
+    if not auto_fixable and not to_skip:
+        return True
+    
+    if not auto and not Confirm.ask("\nProceed with auto-fixes and comments?"):
+        return False
+    
+    # Apply auto-fixes
+    successful_fixes = []
+    if auto_fixable:
+        console.print(f"\n[bold]Applying {len(auto_fixable)} auto-fixes...[/bold]")
+        fixes = auto_fixer.apply_fixes(auto_fixable, dry_run=dry_run)
+        
+        for fix in fixes:
+            status = "[green]✓[/green]" if fix.success else "[red]✗[/red]"
+            console.print(f"  {status} {fix.file_path} - {fix.message}")
+        
+        successful_fixes = [f for f in fixes if f.success]
+    
+    # Post skip comments
+    if to_skip and not dry_run:
+        console.print(f"\n[bold]Posting {len(to_skip)} feedback comments...[/bold]")
+        for c, feedback in to_skip:
+            success = pr_review_manager.fetcher.reply_to_comment(int(pr_id), c.id, feedback)
+            status = "[green]✓[/green]" if success else "[red]✗[/red]"
+            console.print(f"  {status} {c.file_path}:{c.line} - {feedback[:40]}...")
+    
+    # Commit and push fixes
+    if successful_fixes and not dry_run:
         if auto or Confirm.ask("\nCommit fixes?"):
-            msg = auto_fixer.generate_fix_commit_message(fixes)
+            msg = auto_fixer.generate_fix_commit_message(successful_fixes)
             git_automation.set_working_dir(working_dir)
             git_automation.commit_changes(pr_id, msg)
             git_automation.push_branch()
             console.print("[green]✓[/green] Fixes committed and pushed")
             
-            # Reply to comments
-            if auto or Confirm.ask("Reply to PR comments?"):
+            # Reply to fixed comments
+            if auto or Confirm.ask("Reply to fixed comments on PR?"):
                 commit_hash = git_automation.get_last_commit_hash()
-                for fix in successful:
+                for fix in successful_fixes:
                     reply_body = f"Fixed in commit {commit_hash}: {fix.message}"
                     pr_review_manager.fetcher.reply_to_comment(
                         int(pr_id), 
                         fix.comment.id, 
                         reply_body
                     )
-                console.print(f"[green]✓[/green] Replied to {len(successful)} comments")
+                console.print(f"[green]✓[/green] Replied to {len(successful_fixes)} comments")
     
     return True
 

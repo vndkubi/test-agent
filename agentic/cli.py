@@ -320,29 +320,45 @@ def run_pr_review(pr_id: str, working_dir: Optional[Path] = None):
     if not summary:
         return False
     
-    # Count pending vs already fixed
-    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed]
-    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed]
-    pending_complex = [c for c in summary.complex_fixes if not c.is_fixed]
-    pending_discussions = [c for c in summary.discussions if not c.is_fixed]
+    all_comments = (summary.auto_fixable + summary.simple_fixes + 
+                    summary.complex_fixes + summary.discussions)
     
-    fixed_count = sum(1 for c in summary.auto_fixable + summary.simple_fixes + 
-                      summary.complex_fixes + summary.discussions if c.is_fixed)
+    # Count by status
+    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed and not c.needs_rework]
+    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed and not c.needs_rework]
+    pending_complex = [c for c in summary.complex_fixes if not c.is_fixed and not c.needs_rework]
+    pending_discussions = [c for c in summary.discussions if not c.is_fixed and not c.needs_rework]
+    
+    # Comments needing rework (reviewer rejected previous fix)
+    needs_rework = [c for c in all_comments if c.needs_rework]
+    
+    fixed_count = sum(1 for c in all_comments if c.is_fixed)
     
     # Show summary table
     table = Table(title=f"PR #{summary.pr_number}: {summary.pr_title[:50]}")
     table.add_column("Category", style="cyan")
     table.add_column("Pending", justify="right")
-    table.add_column("Fixed", justify="right", style="dim")
+    table.add_column("Fixed", justify="right", style="green")
     table.add_column("Action")
     
-    table.add_row("🤖 Auto-fixable", str(len(pending_auto)), f"({len(summary.auto_fixable) - len(pending_auto)})", "agentic pr fix --auto")
-    table.add_row("🔧 Simple fixes", str(len(pending_simple)), f"({len(summary.simple_fixes) - len(pending_simple)})", "Quick manual fix")
-    table.add_row("🔨 Complex fixes", str(len(pending_complex)), f"({len(summary.complex_fixes) - len(pending_complex)})", "Use Copilot")
-    table.add_row("💬 Discussions", str(len(pending_discussions)), f"({len(summary.discussions) - len(pending_discussions)})", "Reply needed")
+    table.add_row("🤖 Auto-fixable", str(len(pending_auto)), f"({len(summary.auto_fixable) - len(pending_auto) - len([c for c in summary.auto_fixable if c.needs_rework])})", "agentic pr fix --auto")
+    table.add_row("🔧 Simple fixes", str(len(pending_simple)), f"({len(summary.simple_fixes) - len(pending_simple) - len([c for c in summary.simple_fixes if c.needs_rework])})", "Quick manual fix")
+    table.add_row("🔨 Complex fixes", str(len(pending_complex)), f"({len(summary.complex_fixes) - len(pending_complex) - len([c for c in summary.complex_fixes if c.needs_rework])})", "Use Copilot")
+    table.add_row("💬 Discussions", str(len(pending_discussions)), f"({len(summary.discussions) - len(pending_discussions) - len([c for c in summary.discussions if c.needs_rework])})", "Reply needed")
     table.add_row("✅ Resolved", str(len(summary.resolved)), "", "No action")
     
     console.print(table)
+    
+    # Show rework needed (high priority!)
+    if needs_rework:
+        console.print(f"\n[bold red]⚠️  NEEDS REWORK ({len(needs_rework)}):[/bold red] Reviewer requested changes")
+        for c in needs_rework:
+            status = c.last_reply_summary or "Rejected"
+            console.print(f"  [red]•[/red] {c.file_path}:{c.line} - {status}")
+            if c.replies:
+                latest = c.replies[-1] if isinstance(c.replies[-1], dict) else {"body": c.replies[-1]}
+                body = latest.get("body", str(latest))[:80]
+                console.print(f"    [dim]Latest: {body}...[/dim]")
     
     if fixed_count > 0:
         console.print(f"\n[dim]({fixed_count} comments already addressed with replies)[/dim]")
@@ -352,8 +368,11 @@ def run_pr_review(pr_id: str, working_dir: Optional[Path] = None):
     console.print(f"\n[green]✓[/green] Context generated: {context_file.relative_to(working_dir)}")
     
     # Show next steps
+    if needs_rework:
+        console.print(f"\n[red]→[/red] [bold]Fix rejected comments first![/bold] Check reviewer feedback above")
+    
     if pending_auto:
-        console.print(f"\n[yellow]→[/yellow] Run [bold]agentic pr fix {pr_id} --auto[/bold] to auto-fix {len(pending_auto)} issues")
+        console.print(f"[yellow]→[/yellow] Run [bold]agentic pr fix {pr_id} --auto[/bold] to auto-fix {len(pending_auto)} issues")
     
     if pending_complex:
         console.print(f"[yellow]→[/yellow] Open [bold].copilot/pr-{summary.pr_number}/fixes.md[/bold] for Copilot prompts")
@@ -381,19 +400,35 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
     if not summary:
         return False
     
-    # Filter out already-fixed comments
-    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed]
-    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed]
+    all_comments = summary.auto_fixable + summary.simple_fixes
+    
+    # Separate by status
+    needs_rework = [c for c in all_comments if c.needs_rework]
+    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed and not c.needs_rework]
+    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed and not c.needs_rework]
+    skipped = [c for c in all_comments if c.is_fixed]
+    
+    # Show rework needed FIRST (high priority!)
+    if needs_rework:
+        console.print(f"\n[bold red]⚠️  NEEDS REWORK ({len(needs_rework)}):[/bold red]")
+        for c in needs_rework:
+            console.print(f"  [red]•[/red] {c.file_path}:{c.line}")
+            console.print(f"    [dim]Original: {c.body[:60]}...[/dim]")
+            if c.replies:
+                latest = c.replies[-1] if isinstance(c.replies[-1], dict) else {"body": str(c.replies[-1])}
+                body = latest.get("body", str(latest))[:80]
+                console.print(f"    [yellow]Feedback: {body}...[/yellow]")
+        console.print(f"\n[red]→ Please fix these manually based on reviewer feedback![/red]")
     
     # Show skipped (already fixed) comments
-    skipped = [c for c in summary.auto_fixable + summary.simple_fixes if c.is_fixed]
     if skipped:
         console.print(f"\n[dim]Skipped (already fixed): {len(skipped)} comments[/dim]")
-        for c in skipped:
-            console.print(f"  [dim]• {c.file_path}:{c.line} - already replied[/dim]")
     
     if not pending_auto and not pending_simple:
-        console.print("[green]✓[/green] All fixable comments have been addressed!")
+        if needs_rework:
+            console.print("\n[yellow]No new auto-fixable comments. Fix rejected ones manually.[/yellow]")
+        else:
+            console.print("[green]✓[/green] All fixable comments have been addressed!")
         return True
     
     # Show what will be fixed
@@ -405,7 +440,7 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
         if not Confirm.ask("\nApply these fixes?"):
             return False
     
-    # Apply fixes (only pending ones)
+    # Apply fixes (only pending ones, not rework)
     fixes = auto_fixer.apply_fixes(pending_auto, dry_run=dry_run)
     
     # Show results
@@ -437,7 +472,6 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
                 console.print(f"[green]✓[/green] Replied to {len(successful)} comments")
     
     return True
-
 
 def handle_pr_command():
     """Handle pr subcommand."""

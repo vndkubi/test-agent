@@ -52,8 +52,10 @@ class PRComment:
     draft_reply: Optional[str] = None
     
     # Reply tracking
-    replies: list = field(default_factory=list)  # List of reply bodies
-    is_fixed: bool = False  # True if already replied with "Fixed in commit"
+    replies: list = field(default_factory=list)  # List of reply dicts with body and created_at
+    is_fixed: bool = False  # True if latest reply indicates fixed
+    needs_rework: bool = False  # True if reviewer rejected or requested changes
+    last_reply_summary: Optional[str] = None  # Summary of latest reply status
     
     def to_dict(self):
         return {
@@ -66,7 +68,8 @@ class PRComment:
             "difficulty": self.difficulty.value,
             "suggested_fix": self.suggested_fix,
             "draft_reply": self.draft_reply,
-            "is_fixed": self.is_fixed
+            "is_fixed": self.is_fixed,
+            "needs_rework": self.needs_rework
         }
 
 
@@ -192,46 +195,119 @@ class PRReviewFetcher:
         return comments
     
     def _populate_reply_status(self, comments: list[PRComment], raw_comments: list):
-        """Check replies to comments and mark fixed ones."""
-        # Build a map of comment_id -> replies
-        reply_map = {}  # parent_id -> list of reply bodies
+        """Check replies to comments and determine status based on latest reply."""
+        # Build a map of comment_id -> replies with timestamps
+        reply_map = {}  # parent_id -> list of {body, created_at, author}
         for c in raw_comments:
             parent_id = c.get("in_reply_to_id")
             if parent_id:
                 if parent_id not in reply_map:
                     reply_map[parent_id] = []
-                reply_map[parent_id].append(c["body"])
+                reply_map[parent_id].append({
+                    "body": c["body"],
+                    "created_at": c["created_at"],
+                    "author": c["user"]["login"]
+                })
+        
+        # Markers for different statuses
+        fixed_markers = [
+            "fixed in commit", "fixed in ", "done", "resolved", "applied", "✅"
+        ]
+        reviewer_full_ack_markers = [
+            "looks good now", "lgtm", "approved", "this looks good", 
+            "great fix", "perfect", "all good", "ship it", "👍"
+        ]
+        reviewer_partial_ack_markers = [
+            "thanks for applying", "thanks for fixing", "thanks for the fix",
+            "thanks for following up"
+        ]
+        # Markers that indicate more work needed (even after partial ack)
+        more_work_markers = [
+            "you might want to", "you might also want", "could you also",
+            "please also", "also need to", "still need", "one more thing",
+            "introduced", "duplicates", "encoding issue", "clean this up",
+            "double-check", "double check", "might want to clean",
+            "want to double", "if you'd like"
+        ]
+        reject_markers = [
+            "doesn't fix", "does not fix", "doesn't solve", "does not solve",
+            "still broken", "still wrong", "still incorrect", "not quite",
+            "please try again", "try again", "needs more work", "not right",
+            "this is wrong", "that's not", "incorrect", "won't work",
+            "doesn't work", "does not work", "please revise", "please update",
+            "the issue is still", "problem remains", "❌", "👎"
+        ]
         
         # Update comments with their replies
         for comment in comments:
             replies = reply_map.get(comment.id, [])
             comment.replies = replies
             
-            # Check if any reply indicates this was fixed
+            if not replies:
+                continue
+            
+            # Sort replies by created_at to get latest
+            sorted_replies = sorted(replies, key=lambda r: r["created_at"])
+            latest_reply = sorted_replies[-1]
+            latest_body = latest_reply["body"].lower()
+            
+            # Check latest reply status - order matters!
+            # 1. Check for explicit reject first
+            if any(marker in latest_body for marker in reject_markers):
+                comment.needs_rework = True
+                comment.is_fixed = False
+                comment.last_reply_summary = f"⚠️ Reviewer requested changes"
+                continue
+            
+            # 2. Check for explicit fix markers from our tool (before reviewer reply)
+            if any(marker in latest_body for marker in fixed_markers):
+                comment.is_fixed = True
+                comment.needs_rework = False
+                comment.last_reply_summary = f"✅ Fixed"
+                continue
+            
+            # 3. Check for FULL acknowledgment (no more work needed)
+            if any(marker in latest_body for marker in reviewer_full_ack_markers):
+                comment.is_fixed = True
+                comment.needs_rework = False
+                comment.last_reply_summary = f"✅ Approved by reviewer"
+                continue
+            
+            # 4. Check for partial ack + more work suggested
+            has_partial_ack = any(marker in latest_body for marker in reviewer_partial_ack_markers)
+            has_more_work = any(marker in latest_body for marker in more_work_markers)
+            
+            if has_partial_ack and has_more_work:
+                # Reviewer acknowledged but suggested more changes
+                comment.needs_rework = True
+                comment.is_fixed = False
+                comment.last_reply_summary = f"⚠️ Partial fix - more changes suggested"
+                continue
+            elif has_partial_ack:
+                # Pure acknowledgment without suggestions
+                comment.is_fixed = True
+                comment.needs_rework = False
+                comment.last_reply_summary = f"✅ Approved by reviewer"
+                continue
+            
+            # 5. Check ALL replies for fix markers (not just latest)
             for reply in replies:
-                reply_lower = reply.lower()
-                # Markers from our tool
-                if any(marker in reply_lower for marker in [
-                    "fixed in commit",
-                    "fixed in ",
-                    "done",
-                    "resolved",
-                    "applied",
-                    "✅"
-                ]):
-                    comment.is_fixed = True
-                    break
-                # Markers from reviewers acknowledging the fix
-                if any(marker in reply_lower for marker in [
-                    "thanks for applying",
-                    "thanks for fixing",
-                    "thanks for the fix",
-                    "thanks for following up",
-                    "looks good now",
-                    "lgtm",
-                    "approved"
-                ]):
-                    comment.is_fixed = True
+                reply_body = reply["body"].lower()
+                if any(marker in reply_body for marker in fixed_markers):
+                    # Found a fix, but check if there's a reject after it
+                    fix_time = reply["created_at"]
+                    has_reject_after = any(
+                        r["created_at"] > fix_time and 
+                        any(m in r["body"].lower() for m in reject_markers + more_work_markers)
+                        for r in replies
+                    )
+                    if has_reject_after:
+                        comment.needs_rework = True
+                        comment.is_fixed = False
+                        comment.last_reply_summary = f"⚠️ Fix was rejected"
+                    else:
+                        comment.is_fixed = True
+                        comment.last_reply_summary = f"✅ Fixed (pending review)"
                     break
     
     def reply_to_comment(self, pr_number: int, comment_id: int, body: str) -> bool:

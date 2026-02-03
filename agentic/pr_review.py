@@ -210,6 +210,7 @@ class PRReviewFetcher:
             # Check if any reply indicates this was fixed
             for reply in replies:
                 reply_lower = reply.lower()
+                # Markers from our tool
                 if any(marker in reply_lower for marker in [
                     "fixed in commit",
                     "fixed in ",
@@ -217,6 +218,18 @@ class PRReviewFetcher:
                     "resolved",
                     "applied",
                     "✅"
+                ]):
+                    comment.is_fixed = True
+                    break
+                # Markers from reviewers acknowledging the fix
+                if any(marker in reply_lower for marker in [
+                    "thanks for applying",
+                    "thanks for fixing",
+                    "thanks for the fix",
+                    "thanks for following up",
+                    "looks good now",
+                    "lgtm",
+                    "approved"
                 ]):
                     comment.is_fixed = True
                     break

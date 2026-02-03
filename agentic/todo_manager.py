@@ -1,241 +1,252 @@
-"""Interactive TODO manager for tracking PBI progress."""
+"""Interactive TODO manager for PBI tracking."""
 
 import json
 from pathlib import Path
-from typing import Optional, List
-from datetime import datetime
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 from rich.console import Console
 from rich.table import Table
-from rich.prompt import Prompt, Confirm
 from rich.panel import Panel
+from rich.prompt import Prompt, Confirm
 
 from .config import workflow_config
 
-console = Console()
+
+@dataclass
+class TodoItem:
+    """A single TODO item."""
+    id: int
+    title: str
+    status: str = "pending"  # pending, in_progress, done
+    category: str = "general"  # requirement, test, implementation
+    
+    def to_dict(self):
+        return {
+            "id": self.id,
+            "title": self.title,
+            "status": self.status,
+            "category": self.category
+        }
+    
+    @classmethod
+    def from_dict(cls, data: dict) -> "TodoItem":
+        return cls(**data)
 
 
 class TodoManager:
-    """Manages interactive TODO checklist for PBIs."""
+    """Manages TODO items for a PBI."""
     
-    def __init__(self, working_dir: Optional[Path] = None):
-        self.working_dir = working_dir or Path.cwd()
-        self.context_dir = self.working_dir / workflow_config.context_dir
+    STATUS_ICONS = {
+        "pending": "⬜",
+        "in_progress": "🔄",
+        "done": "✅"
+    }
     
-    def get_todo_file(self, pbi_key: str) -> Path:
-        """Get path to todo.json for a PBI."""
-        return self.context_dir / pbi_key / "todo.json"
+    CATEGORY_COLORS = {
+        "requirement": "cyan",
+        "test": "yellow",
+        "implementation": "green",
+        "general": "white"
+    }
     
-    def load_todos(self, pbi_key: str) -> dict:
-        """Load TODO data from file."""
-        todo_file = self.get_todo_file(pbi_key)
-        if not todo_file.exists():
-            raise FileNotFoundError(f"No TODO found for {pbi_key}. Run workflow first.")
-        
-        return json.loads(todo_file.read_text(encoding='utf-8'))
+    def __init__(self):
+        self.console = Console()
+        self.context_dir = workflow_config.context_dir
     
-    def save_todos(self, pbi_key: str, data: dict):
-        """Save TODO data to file."""
-        todo_file = self.get_todo_file(pbi_key)
-        todo_file.write_text(json.dumps(data, indent=2), encoding='utf-8')
-        
-        # Also update markdown view
-        self._update_markdown(pbi_key, data)
+    def get_todo_file(self, pbi_key: str, working_dir: Optional[Path] = None) -> Path:
+        """Get path to TODO JSON file for a PBI."""
+        working_dir = working_dir or Path.cwd()
+        return working_dir / self.context_dir / pbi_key / "todo.json"
     
-    def _update_markdown(self, pbi_key: str, data: dict):
-        """Update todo.md with current status."""
-        md_file = self.context_dir / pbi_key / "todo.md"
+    def load_todos(self, pbi_key: str, working_dir: Optional[Path] = None) -> tuple:
+        """Load TODOs from file. Returns (pbi_summary, todos)."""
+        file_path = self.get_todo_file(pbi_key, working_dir)
         
-        todos = data["todos"]
-        done_count = sum(1 for t in todos if t["status"] == "done")
-        total = len(todos)
-        progress_pct = int(done_count / total * 100) if total > 0 else 0
+        if not file_path.exists():
+            return None, []
         
-        # Group by category
-        requirements = [t for t in todos if t["category"] == "requirement"]
-        tests = [t for t in todos if t["category"] == "test"]
-        implementation = [t for t in todos if t["category"] == "implementation"]
+        data = json.loads(file_path.read_text(encoding='utf-8'))
+        todos = [TodoItem.from_dict(t) for t in data.get("todos", [])]
+        return data.get("summary", ""), todos
+    
+    def save_todos(self, pbi_key: str, summary: str, todos: List[TodoItem], working_dir: Optional[Path] = None):
+        """Save TODOs to file."""
+        file_path = self.get_todo_file(pbi_key, working_dir)
+        data = {
+            "pbi_key": pbi_key,
+            "summary": summary,
+            "todos": [t.to_dict() for t in todos]
+        }
+        file_path.write_text(json.dumps(data, indent=2), encoding='utf-8')
+        self._update_markdown(pbi_key, summary, todos, working_dir)
+    
+    def _update_markdown(self, pbi_key: str, summary: str, todos: List[TodoItem], working_dir: Optional[Path] = None):
+        """Update the markdown TODO file."""
+        working_dir = working_dir or Path.cwd()
+        md_path = working_dir / self.context_dir / pbi_key / "todo.md"
         
-        def render_todos(items):
-            lines = []
+        def render_category(cat: str, name: str):
+            items = [t for t in todos if t.category == cat]
+            if not items:
+                return ""
+            
+            lines = [f"\n## {name}"]
             for t in items:
-                checkbox = "x" if t["status"] == "done" else " "
-                status_marker = ""
-                if t["status"] == "in-progress":
-                    status_marker = " 🔄"
-                lines.append(f"- [{checkbox}] {t['title']}{status_marker}")
+                check = "x" if t.status == "done" else " "
+                prefix = "🔄 " if t.status == "in_progress" else ""
+                lines.append(f"- [{check}] {prefix}{t.title}")
             return "\n".join(lines)
+        
+        done_count = len([t for t in todos if t.status == "done"])
+        total = len(todos)
+        pct = int(done_count / total * 100) if total > 0 else 0
         
         content = f'''# ✅ TODO: {pbi_key}
 
-> **{data["summary"]}**
-> 
-> Use `agentic todo {pbi_key}` to manage interactively
+> **{summary}**
+{render_category("requirement", "📋 Requirements")}
+{render_category("test", "🧪 Tests")}
+{render_category("implementation", "🔨 Implementation")}
+{render_category("general", "📝 General")}
 
 ---
-
-## 📋 Requirements
-{render_todos(requirements)}
-
-## 🧪 Tests  
-{render_todos(tests)}
-
-## 🔨 Implementation
-{render_todos(implementation)}
-
----
-
-## Progress
-
-```
-Total: {total} tasks
-Done:  {done_count} / {total} ({progress_pct}%)
-
-{"█" * (progress_pct // 5)}{"░" * (20 - progress_pct // 5)} {progress_pct}%
-```
-
----
-_Last updated: {datetime.now().strftime("%Y-%m-%d %H:%M")}_
+**Progress:** {done_count}/{total} ({pct}%)
 '''
-        md_file.write_text(content, encoding='utf-8')
+        md_path.write_text(content, encoding='utf-8')
     
-    def show(self, pbi_key: str):
-        """Display TODO list in terminal."""
-        data = self.load_todos(pbi_key)
-        todos = data["todos"]
+    def show(self, pbi_key: str, working_dir: Optional[Path] = None):
+        """Display TODOs in a nice table."""
+        summary, todos = self.load_todos(pbi_key, working_dir)
         
-        console.print(Panel.fit(
-            f"[bold]{pbi_key}[/bold]: {data['summary']}",
+        if not todos:
+            self.console.print(f"[yellow]No TODOs found for {pbi_key}[/yellow]")
+            self.console.print(f"[dim]Run 'agentic {pbi_key}' first to generate context.[/dim]")
+            return
+        
+        done_count = len([t for t in todos if t.status == "done"])
+        pct = int(done_count / len(todos) * 100)
+        
+        table = Table(title=f"📋 {pbi_key}: {summary}")
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Status", width=6)
+        table.add_column("Task", min_width=40)
+        table.add_column("Category", width=14)
+        
+        for todo in todos:
+            icon = self.STATUS_ICONS.get(todo.status, "⬜")
+            color = self.CATEGORY_COLORS.get(todo.category, "white")
+            style = "dim" if todo.status == "done" else ""
+            
+            table.add_row(
+                str(todo.id),
+                icon,
+                todo.title,
+                f"[{color}]{todo.category}[/{color}]",
+                style=style
+            )
+        
+        self.console.print(table)
+        
+        # Progress bar
+        bar_len = 20
+        filled = int(bar_len * pct / 100)
+        bar = "█" * filled + "░" * (bar_len - filled)
+        self.console.print(f"\n[bold]Progress:[/bold] [{bar}] {pct}% ({done_count}/{len(todos)})")
+    
+    def interactive(self, pbi_key: str, working_dir: Optional[Path] = None):
+        """Interactive TODO management mode."""
+        summary, todos = self.load_todos(pbi_key, working_dir)
+        
+        if not todos:
+            self.console.print(f"[yellow]No TODOs found for {pbi_key}[/yellow]")
+            return
+        
+        self.console.print(Panel.fit(
+            f"[bold]Interactive TODO Manager[/bold]\n"
+            f"[dim]{pbi_key}: {summary}[/dim]",
             border_style="blue"
         ))
         
-        # Create table
-        table = Table(show_header=True, header_style="bold")
-        table.add_column("#", width=3)
-        table.add_column("Status", width=12)
-        table.add_column("Category", width=14)
-        table.add_column("Task")
-        
-        for todo in todos:
-            status_style = {
-                "pending": "[dim]⬜ pending[/dim]",
-                "in-progress": "[yellow]🔄 working[/yellow]",
-                "done": "[green]✅ done[/green]"
-            }.get(todo["status"], todo["status"])
-            
-            cat_style = {
-                "requirement": "[cyan]requirement[/cyan]",
-                "test": "[magenta]test[/magenta]",
-                "implementation": "[blue]implementation[/blue]"
-            }.get(todo["category"], todo["category"])
-            
-            table.add_row(
-                str(todo["id"]),
-                status_style,
-                cat_style,
-                todo["title"]
-            )
-        
-        console.print(table)
-        
-        # Show progress
-        done_count = sum(1 for t in todos if t["status"] == "done")
-        total = len(todos)
-        progress_pct = int(done_count / total * 100) if total > 0 else 0
-        
-        console.print(f"\n[bold]Progress:[/bold] {done_count}/{total} ({progress_pct}%)")
-        console.print(f"[green]{'█' * (progress_pct // 5)}[/green][dim]{'░' * (20 - progress_pct // 5)}[/dim]")
-    
-    def interactive(self, pbi_key: str):
-        """Interactive TODO management."""
         while True:
-            console.clear()
-            self.show(pbi_key)
+            self.show(pbi_key, working_dir)
+            self.console.print("\n[dim]Commands: (n)ext, (d)one, (u)ndo, (s)tart, (q)uit[/dim]")
             
-            console.print("\n[bold]Commands:[/bold]")
-            console.print("  [cyan]s[/cyan] <id>  - Start task (in-progress)")
-            console.print("  [green]d[/green] <id>  - Done task")
-            console.print("  [yellow]r[/yellow] <id>  - Reset to pending")
-            console.print("  [blue]a[/blue]      - Add new task")
-            console.print("  [red]q[/red]      - Quit")
+            cmd = Prompt.ask("Command", default="q")
             
-            cmd = Prompt.ask("\nCommand").strip().lower()
-            
-            if cmd == 'q':
+            if cmd.lower() == 'q':
                 break
-            
-            if cmd == 'a':
-                self._add_task(pbi_key)
-                continue
-            
-            if len(cmd) >= 2:
-                action = cmd[0]
+            elif cmd.lower() == 'n':
+                # Find next pending
+                pending = [t for t in todos if t.status == "pending"]
+                if pending:
+                    pending[0].status = "in_progress"
+                    self.save_todos(pbi_key, summary, todos, working_dir)
+                    self.console.print(f"[green]Started: {pending[0].title}[/green]")
+                else:
+                    self.console.print("[yellow]No pending tasks![/yellow]")
+            elif cmd.lower() == 'd':
+                # Mark in_progress as done
+                in_progress = [t for t in todos if t.status == "in_progress"]
+                if in_progress:
+                    in_progress[0].status = "done"
+                    self.save_todos(pbi_key, summary, todos, working_dir)
+                    self.console.print(f"[green]✓ Done: {in_progress[0].title}[/green]")
+                else:
+                    # Or select one
+                    task_id = Prompt.ask("Task ID to mark done")
+                    try:
+                        task = next(t for t in todos if t.id == int(task_id))
+                        task.status = "done"
+                        self.save_todos(pbi_key, summary, todos, working_dir)
+                        self.console.print(f"[green]✓ Done: {task.title}[/green]")
+                    except (StopIteration, ValueError):
+                        self.console.print("[red]Invalid task ID[/red]")
+            elif cmd.lower() == 's':
+                task_id = Prompt.ask("Task ID to start")
                 try:
-                    task_id = int(cmd.split()[1])
-                    
-                    if action == 's':
-                        self.update_status(pbi_key, task_id, "in-progress")
-                    elif action == 'd':
-                        self.update_status(pbi_key, task_id, "done")
-                    elif action == 'r':
-                        self.update_status(pbi_key, task_id, "pending")
-                except (ValueError, IndexError):
-                    console.print("[red]Invalid command. Use: s/d/r <id>[/red]")
-                    Prompt.ask("Press Enter to continue")
+                    task = next(t for t in todos if t.id == int(task_id))
+                    # Reset others
+                    for t in todos:
+                        if t.status == "in_progress":
+                            t.status = "pending"
+                    task.status = "in_progress"
+                    self.save_todos(pbi_key, summary, todos, working_dir)
+                    self.console.print(f"[cyan]🔄 Started: {task.title}[/cyan]")
+                except (StopIteration, ValueError):
+                    self.console.print("[red]Invalid task ID[/red]")
+            elif cmd.lower() == 'u':
+                # Undo last done
+                done = [t for t in todos if t.status == "done"]
+                if done:
+                    done[-1].status = "pending"
+                    self.save_todos(pbi_key, summary, todos, working_dir)
+                    self.console.print(f"[yellow]↩ Undone: {done[-1].title}[/yellow]")
+                else:
+                    self.console.print("[yellow]Nothing to undo[/yellow]")
+            else:
+                # Maybe it's a task ID
+                try:
+                    task_id = int(cmd)
+                    task = next(t for t in todos if t.id == task_id)
+                    self.console.print(f"\nTask {task_id}: {task.title}")
+                    action = Prompt.ask("Action", choices=["done", "start", "pending"], default="done")
+                    task.status = "in_progress" if action == "start" else action
+                    self.save_todos(pbi_key, summary, todos, working_dir)
+                except (ValueError, StopIteration):
+                    self.console.print("[red]Unknown command[/red]")
     
-    def update_status(self, pbi_key: str, task_id: int, status: str):
-        """Update a task's status."""
-        data = self.load_todos(pbi_key)
+    def update_status(self, pbi_key: str, task_id: int, status: str, working_dir: Optional[Path] = None):
+        """Update a specific task status."""
+        summary, todos = self.load_todos(pbi_key, working_dir)
         
-        for todo in data["todos"]:
-            if todo["id"] == task_id:
-                todo["status"] = status
-                self.save_todos(pbi_key, data)
-                return True
-        
-        return False
-    
-    def _add_task(self, pbi_key: str):
-        """Add a new task interactively."""
-        data = self.load_todos(pbi_key)
-        
-        title = Prompt.ask("Task title")
-        if not title:
-            return
-        
-        category = Prompt.ask(
-            "Category",
-            choices=["requirement", "test", "implementation"],
-            default="implementation"
-        )
-        
-        # Get next ID
-        max_id = max(t["id"] for t in data["todos"]) if data["todos"] else 0
-        
-        data["todos"].append({
-            "id": max_id + 1,
-            "title": title,
-            "status": "pending",
-            "category": category
-        })
-        
-        self.save_todos(pbi_key, data)
-        console.print(f"[green]✓[/green] Added task #{max_id + 1}")
-    
-    def mark_done(self, pbi_key: str, task_id: int):
-        """Quick mark task as done."""
-        if self.update_status(pbi_key, task_id, "done"):
-            console.print(f"[green]✓[/green] Task #{task_id} marked as done")
-        else:
-            console.print(f"[red]✗[/red] Task #{task_id} not found")
-    
-    def get_progress(self, pbi_key: str) -> tuple[int, int]:
-        """Get progress (done, total)."""
-        data = self.load_todos(pbi_key)
-        todos = data["todos"]
-        done = sum(1 for t in todos if t["status"] == "done")
-        return done, len(todos)
+        try:
+            task = next(t for t in todos if t.id == task_id)
+            task.status = status
+            self.save_todos(pbi_key, summary, todos, working_dir)
+            return True
+        except StopIteration:
+            return False
 
 
-# Singleton instance
 todo_manager = TodoManager()

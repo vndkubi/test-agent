@@ -320,32 +320,50 @@ def run_pr_review(pr_id: str, working_dir: Optional[Path] = None):
     if not summary:
         return False
     
+    # Count pending vs already fixed
+    pending_auto = len([c for c in summary.auto_fixable if not c.is_fixed])
+    pending_simple = len([c for c in summary.simple_fixes if not c.is_fixed])
+    pending_complex = len([c for c in summary.complex_fixes if not c.is_fixed])
+    pending_discussions = len([c for c in summary.discussions if not c.is_fixed])
+    
+    fixed_count = sum(1 for c in summary.auto_fixable + summary.simple_fixes + 
+                      summary.complex_fixes + summary.discussions if c.is_fixed)
+    
     # Show summary table
     table = Table(title=f"PR #{summary.pr_number}: {summary.pr_title[:50]}")
     table.add_column("Category", style="cyan")
-    table.add_column("Count", justify="right")
+    table.add_column("Pending", justify="right")
+    table.add_column("Fixed", justify="right", style="dim")
     table.add_column("Action")
     
-    table.add_row("🤖 Auto-fixable", str(len(summary.auto_fixable)), "agentic pr fix --auto")
-    table.add_row("🔧 Simple fixes", str(len(summary.simple_fixes)), "Quick manual fix")
-    table.add_row("🔨 Complex fixes", str(len(summary.complex_fixes)), "Use Copilot")
-    table.add_row("💬 Discussions", str(len(summary.discussions)), "Reply needed")
-    table.add_row("✅ Resolved", str(len(summary.resolved)), "No action")
+    auto_fixed = len(summary.auto_fixable) - pending_auto
+    simple_fixed = len(summary.simple_fixes) - pending_simple
+    complex_fixed = len(summary.complex_fixes) - pending_complex
+    disc_fixed = len(summary.discussions) - pending_discussions
+    
+    table.add_row("🤖 Auto-fixable", str(pending_auto), f"({auto_fixed})", "agentic pr fix --auto")
+    table.add_row("🔧 Simple fixes", str(pending_simple), f"({simple_fixed})", "Quick manual fix")
+    table.add_row("🔨 Complex fixes", str(pending_complex), f"({complex_fixed})", "Use Copilot")
+    table.add_row("💬 Discussions", str(pending_discussions), f"({disc_fixed})", "Reply needed")
+    table.add_row("✅ Resolved", str(len(summary.resolved)), "", "No action")
     
     console.print(table)
+    
+    if fixed_count > 0:
+        console.print(f"\n[dim]({fixed_count} comments already addressed with replies)[/dim]")
     
     # Generate context files
     context_file = pr_review_manager.generate_review_context(summary, working_dir)
     console.print(f"\n[green]✓[/green] Context generated: {context_file.relative_to(working_dir)}")
     
     # Show next steps
-    if summary.auto_fixable:
-        console.print(f"\n[yellow]→[/yellow] Run [bold]agentic pr fix {pr_id} --auto[/bold] to auto-fix {len(summary.auto_fixable)} issues")
+    if pending_auto > 0:
+        console.print(f"\n[yellow]→[/yellow] Run [bold]agentic pr fix {pr_id} --auto[/bold] to auto-fix {pending_auto} issues")
     
-    if summary.complex_fixes:
+    if pending_complex > 0:
         console.print(f"[yellow]→[/yellow] Open [bold].copilot/pr-{summary.pr_number}/fixes.md[/bold] for Copilot prompts")
     
-    if summary.discussions:
+    if pending_discussions > 0:
         console.print(f"[yellow]→[/yellow] Review [bold].copilot/pr-{summary.pr_number}/discussions.md[/bold] for replies")
     
     return True
@@ -388,21 +406,34 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
     if not summary:
         return False
     
-    if not summary.auto_fixable and not summary.simple_fixes:
-        console.print("[yellow]No auto-fixable comments found[/yellow]")
+    # Filter out already-fixed comments
+    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed]
+    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed]
+    
+    # Show skipped (already fixed) comments
+    skipped_auto = [c for c in summary.auto_fixable if c.is_fixed]
+    skipped_simple = [c for c in summary.simple_fixes if c.is_fixed]
+    
+    if skipped_auto or skipped_simple:
+        console.print(f"\n[dim]Skipped (already fixed): {len(skipped_auto) + len(skipped_simple)} comments[/dim]")
+        for c in skipped_auto + skipped_simple:
+            console.print(f"  [dim]• {c.file_path}:{c.line} - already replied[/dim]")
+    
+    if not pending_auto and not pending_simple:
+        console.print("[green]✓[/green] All fixable comments have been addressed!")
         return True
     
     # Show what will be fixed
-    console.print(f"\n[bold]Auto-fixable ({len(summary.auto_fixable)}):[/bold]")
-    for c in summary.auto_fixable:
+    console.print(f"\n[bold]Pending auto-fixable ({len(pending_auto)}):[/bold]")
+    for c in pending_auto:
         console.print(f"  • {c.file_path}:{c.line} - {c.suggested_fix or c.body[:50]}")
     
     if not auto:
         if not Confirm.ask("\nApply these fixes?"):
             return False
     
-    # Apply fixes
-    fixes = auto_fixer.apply_fixes(summary.auto_fixable, dry_run=dry_run)
+    # Apply fixes (only pending ones)
+    fixes = auto_fixer.apply_fixes(pending_auto, dry_run=dry_run)
     
     # Show results
     console.print(f"\n[bold]Results:[/bold]")

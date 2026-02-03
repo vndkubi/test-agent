@@ -51,6 +51,10 @@ class PRComment:
     suggested_fix: Optional[str] = None
     draft_reply: Optional[str] = None
     
+    # Reply tracking
+    replies: list = field(default_factory=list)  # List of reply bodies
+    is_fixed: bool = False  # True if already replied with "Fixed in commit"
+    
     def to_dict(self):
         return {
             "id": self.id,
@@ -61,7 +65,8 @@ class PRComment:
             "category": self.category.value,
             "difficulty": self.difficulty.value,
             "suggested_fix": self.suggested_fix,
-            "draft_reply": self.draft_reply
+            "draft_reply": self.draft_reply,
+            "is_fixed": self.is_fixed
         }
 
 
@@ -124,20 +129,31 @@ class PRReviewFetcher:
         return None
     
     def fetch_review_comments(self, pr_number: int) -> list[PRComment]:
-        """Fetch all review comments for a PR."""
+        """Fetch all review comments for a PR, including reply status."""
         # Get review comments (inline comments on code)
+        # Using graphql to get comments with their replies
         success, output = self._run_gh([
             "api", f"repos/{{owner}}/{{repo}}/pulls/{pr_number}/comments",
             "--jq", "."
         ])
         
         comments = []
+        comment_ids = []  # Track IDs to fetch replies
+        
         if success and output:
             try:
                 raw_comments = json.loads(output)
                 for c in raw_comments:
+                    comment_id = c["id"]
+                    comment_ids.append(comment_id)
+                    
+                    # Check if this is a reply (has in_reply_to_id)
+                    # Skip reply comments as they are not original review comments
+                    if c.get("in_reply_to_id"):
+                        continue
+                    
                     comments.append(PRComment(
-                        id=c["id"],
+                        id=comment_id,
                         author=c["user"]["login"],
                         body=c["body"],
                         file_path=c.get("path"),
@@ -148,6 +164,9 @@ class PRReviewFetcher:
                     ))
             except json.JSONDecodeError:
                 pass
+        
+        # Fetch replies for each comment and check if already fixed
+        self._populate_reply_status(pr_number, comments, output)
         
         # Also get issue comments (general PR comments)
         success, output = self._run_gh([
@@ -173,6 +192,44 @@ class PRReviewFetcher:
                 pass
         
         return comments
+    
+    def _populate_reply_status(self, pr_number: int, comments: list[PRComment], raw_output: str):
+        """Check replies to comments and mark fixed ones."""
+        if not raw_output:
+            return
+        
+        try:
+            all_comments = json.loads(raw_output)
+        except json.JSONDecodeError:
+            return
+        
+        # Build a map of comment_id -> replies
+        reply_map = {}  # parent_id -> list of reply bodies
+        for c in all_comments:
+            parent_id = c.get("in_reply_to_id")
+            if parent_id:
+                if parent_id not in reply_map:
+                    reply_map[parent_id] = []
+                reply_map[parent_id].append(c["body"])
+        
+        # Update comments with their replies
+        for comment in comments:
+            replies = reply_map.get(comment.id, [])
+            comment.replies = replies
+            
+            # Check if any reply indicates this was fixed
+            for reply in replies:
+                reply_lower = reply.lower()
+                if any(marker in reply_lower for marker in [
+                    "fixed in commit",
+                    "fixed in ",
+                    "done",
+                    "resolved",
+                    "applied",
+                    "✅"
+                ]):
+                    comment.is_fixed = True
+                    break
     
     def reply_to_comment(self, pr_number: int, comment_id: int, body: str) -> bool:
         """Reply to a review comment."""

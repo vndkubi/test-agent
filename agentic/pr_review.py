@@ -229,12 +229,16 @@ class CommentAnalyzer:
             lambda m: "Remove unused import",
         r'add\s+missing\s+(semicolon|comma|bracket)':
             lambda m: f"Add missing {m.group(1)}",
-        r'(typo|spelling).*[`\'](\w+)[`\'].*[`\'](\w+)[`\']':
+        r'(typo|spelling).*[`\']?(\w+)[`\']?.*[`\']?(\w+)[`\']?':
             lambda m: f"Fix typo: `{m.group(2)}` → `{m.group(3)}`",
         r'extra\s+(space|whitespace|line)':
             lambda m: "Remove extra whitespace",
         r'missing\s+(space|newline)':
             lambda m: f"Add missing {m.group(1)}",
+        r'should\s+(return|be)\s+[`\']?(\w+)[`\']?':
+            lambda m: f"Change return value to `{m.group(2)}`",
+        r'rename\s+[`\']?(\w+)[`\']?\s+to\s+[`\']?(\w+)[`\']?':
+            lambda m: f"Rename `{m.group(1)}` to `{m.group(2)}`",
     }
     
     def analyze(self, comment: PRComment) -> PRComment:
@@ -285,10 +289,31 @@ class CommentAnalyzer:
                 comment.difficulty = FixDifficulty.COMPLEX
             return comment
         
+        # Check for code blocks with fixes (even if not matching other patterns)
+        if '```python' in comment.body or '```suggestion' in comment.body:
+            comment.category = CommentCategory.CODE_FIX
+            auto_fix = self._try_auto_fix(comment)
+            if auto_fix:
+                comment.difficulty = FixDifficulty.AUTO
+                comment.suggested_fix = auto_fix
+            elif self._is_simple_fix(comment):
+                comment.difficulty = FixDifficulty.SIMPLE
+            else:
+                comment.difficulty = FixDifficulty.COMPLEX
+            return comment
+        
         # Check for logic issues
-        if any(word in body_lower for word in ['logic', 'handle', 'case', 'error', 'null', 'undefined', 'edge']):
+        if any(word in body_lower for word in ['logic', 'handle', 'case', 'error', 'null', 'undefined', 'edge', 'guard', 'none', 'typeerror', 'crash']):
             comment.category = CommentCategory.LOGIC_ISSUE
-            comment.difficulty = FixDifficulty.COMPLEX
+            # Check if there's a suggested fix pattern
+            auto_fix = self._try_auto_fix(comment)
+            if auto_fix:
+                comment.difficulty = FixDifficulty.AUTO
+                comment.suggested_fix = auto_fix
+            elif self._is_simple_fix(comment):
+                comment.difficulty = FixDifficulty.SIMPLE
+            else:
+                comment.difficulty = FixDifficulty.COMPLEX
             return comment
         
         # Default: unknown, treat as complex
@@ -317,15 +342,38 @@ class CommentAnalyzer:
         if suggestion_match:
             return f"Apply suggestion:\n{suggestion_match.group(1)}"
         
+        # Check for python code blocks with simple patterns
+        python_match = re.search(r'```python\s*\n(.*?)\n```', comment.body, re.DOTALL)
+        if python_match:
+            code = python_match.group(1).strip()
+            # Simple one-liner or guard clause
+            if code.count('\n') <= 2 and len(code) < 200:
+                return f"Apply code fix:\n```python\n{code}\n```"
+        
+        # Check for inline code with "instead" pattern
+        instead_match = re.search(r'[`\']([^`\']+)[`\']\s*instead', comment.body, re.IGNORECASE)
+        if instead_match:
+            return f"Use `{instead_match.group(1)}` instead"
+        
         return None
     
     def _is_simple_fix(self, comment: PRComment) -> bool:
         """Determine if fix is simple (one-liner)."""
         simple_indicators = [
             'rename', 'typo', 'import', 'const', 'let', 'var',
-            'semicolon', 'comma', 'bracket', 'parenthesis'
+            'semicolon', 'comma', 'bracket', 'parenthesis',
+            'guard', 'check', 'if not', 'or []', 'or {}', '= None',
+            'exists', 'missing'
         ]
         body_lower = comment.body.lower()
+        
+        # Check for simple code blocks (1-3 lines)
+        code_match = re.search(r'```\w*\s*\n(.*?)\n```', comment.body, re.DOTALL)
+        if code_match:
+            code_lines = code_match.group(1).strip().split('\n')
+            if len(code_lines) <= 3:
+                return True
+        
         return any(ind in body_lower for ind in simple_indicators)
     
     def _generate_question_reply(self, comment: PRComment) -> str:

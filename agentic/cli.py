@@ -141,8 +141,8 @@ def run_workflow(
     print_step(4, total_steps, "Generating Copilot context...")
     
     try:
-        context_file = context_generator.generate(pbi, working_dir)
-        print_step(4, total_steps, f"Context: {context_file.relative_to(working_dir)}", "done")
+        context_file = enhanced_context_generator.generate(pbi, working_dir)
+        print_step(4, total_steps, f"Context: {context_file.requirements.relative_to(working_dir)}", "done")
     except Exception as e:
         print_step(4, total_steps, f"Context generation failed: {e}", "error")
         return False
@@ -150,10 +150,11 @@ def run_workflow(
     # ============================================
     # Step 5: Manual implementation with Copilot
     # ============================================
+    context_dir = context_file.requirements.parent.relative_to(working_dir)
     console.print("\n" + "─" * 50)
     console.print(Panel.fit(
         "[bold cyan]🛑 Manual Step: Implement with Copilot[/bold cyan]\n\n"
-        f"1. Open [bold]{context_file.relative_to(working_dir)}[/bold]\n"
+        f"1. Open [bold]{context_dir}/index.md[/bold]\n"
         "2. Use Copilot Chat to analyze requirements\n"
         "3. Follow TDD: Write tests first, then implement\n"
         "4. Come back here when ready to create PR",

@@ -164,7 +164,8 @@ class EnhancedContextGenerator:
         todos.append(TodoItem(todo_id, "Review requirements", "pending", "requirement").to_dict()); todo_id += 1
         todos.append(TodoItem(todo_id, "Analyze scope", "pending", "requirement").to_dict()); todo_id += 1
         
-        for ac in pbi.acceptance_criteria[:5]:
+        ac_list = pbi.acceptance_criteria or []
+        for ac in ac_list[:5]:
             short = ac[:35] + "..." if len(ac) > 35 else ac
             todos.append(TodoItem(todo_id, f"Test: {short}", "pending", "test").to_dict()); todo_id += 1
         
@@ -214,8 +215,13 @@ Progress: 0/{len(todos)} (0%)
         
         test_file = tests_dir / f"test_{pbi.key.lower().replace('-', '_')}.py"
         
+        # Skip if test file already exists (don't overwrite user's tests)
+        if test_file.exists():
+            return test_file
+        
         test_funcs = []
-        for i, ac in enumerate(pbi.acceptance_criteria[:5], 1):
+        ac_list = pbi.acceptance_criteria or []
+        for i, ac in enumerate(ac_list[:5], 1):
             func_name = self._ac_to_test_name(ac)
             test_funcs.append(f'''
 def {func_name}():

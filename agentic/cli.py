@@ -320,32 +320,45 @@ def run_pr_review(pr_id: str, working_dir: Optional[Path] = None):
     if not summary:
         return False
     
+    # Count pending vs already fixed
+    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed]
+    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed]
+    pending_complex = [c for c in summary.complex_fixes if not c.is_fixed]
+    pending_discussions = [c for c in summary.discussions if not c.is_fixed]
+    
+    fixed_count = sum(1 for c in summary.auto_fixable + summary.simple_fixes + 
+                      summary.complex_fixes + summary.discussions if c.is_fixed)
+    
     # Show summary table
     table = Table(title=f"PR #{summary.pr_number}: {summary.pr_title[:50]}")
     table.add_column("Category", style="cyan")
-    table.add_column("Count", justify="right")
+    table.add_column("Pending", justify="right")
+    table.add_column("Fixed", justify="right", style="dim")
     table.add_column("Action")
     
-    table.add_row("🤖 Auto-fixable", str(len(summary.auto_fixable)), "agentic pr fix --auto")
-    table.add_row("🔧 Simple fixes", str(len(summary.simple_fixes)), "Quick manual fix")
-    table.add_row("🔨 Complex fixes", str(len(summary.complex_fixes)), "Use Copilot")
-    table.add_row("💬 Discussions", str(len(summary.discussions)), "Reply needed")
-    table.add_row("✅ Resolved", str(len(summary.resolved)), "No action")
+    table.add_row("🤖 Auto-fixable", str(len(pending_auto)), f"({len(summary.auto_fixable) - len(pending_auto)})", "agentic pr fix --auto")
+    table.add_row("🔧 Simple fixes", str(len(pending_simple)), f"({len(summary.simple_fixes) - len(pending_simple)})", "Quick manual fix")
+    table.add_row("🔨 Complex fixes", str(len(pending_complex)), f"({len(summary.complex_fixes) - len(pending_complex)})", "Use Copilot")
+    table.add_row("💬 Discussions", str(len(pending_discussions)), f"({len(summary.discussions) - len(pending_discussions)})", "Reply needed")
+    table.add_row("✅ Resolved", str(len(summary.resolved)), "", "No action")
     
     console.print(table)
+    
+    if fixed_count > 0:
+        console.print(f"\n[dim]({fixed_count} comments already addressed with replies)[/dim]")
     
     # Generate context files
     context_file = pr_review_manager.generate_review_context(summary, working_dir)
     console.print(f"\n[green]✓[/green] Context generated: {context_file.relative_to(working_dir)}")
     
     # Show next steps
-    if summary.auto_fixable:
-        console.print(f"\n[yellow]→[/yellow] Run [bold]agentic pr fix {pr_id} --auto[/bold] to auto-fix {len(summary.auto_fixable)} issues")
+    if pending_auto:
+        console.print(f"\n[yellow]→[/yellow] Run [bold]agentic pr fix {pr_id} --auto[/bold] to auto-fix {len(pending_auto)} issues")
     
-    if summary.complex_fixes:
+    if pending_complex:
         console.print(f"[yellow]→[/yellow] Open [bold].copilot/pr-{summary.pr_number}/fixes.md[/bold] for Copilot prompts")
     
-    if summary.discussions:
+    if pending_discussions:
         console.print(f"[yellow]→[/yellow] Review [bold].copilot/pr-{summary.pr_number}/discussions.md[/bold] for replies")
     
     return True
@@ -368,21 +381,32 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
     if not summary:
         return False
     
-    if not summary.auto_fixable and not summary.simple_fixes:
-        console.print("[yellow]No auto-fixable comments found[/yellow]")
+    # Filter out already-fixed comments
+    pending_auto = [c for c in summary.auto_fixable if not c.is_fixed]
+    pending_simple = [c for c in summary.simple_fixes if not c.is_fixed]
+    
+    # Show skipped (already fixed) comments
+    skipped = [c for c in summary.auto_fixable + summary.simple_fixes if c.is_fixed]
+    if skipped:
+        console.print(f"\n[dim]Skipped (already fixed): {len(skipped)} comments[/dim]")
+        for c in skipped:
+            console.print(f"  [dim]• {c.file_path}:{c.line} - already replied[/dim]")
+    
+    if not pending_auto and not pending_simple:
+        console.print("[green]✓[/green] All fixable comments have been addressed!")
         return True
     
     # Show what will be fixed
-    console.print(f"\n[bold]Auto-fixable ({len(summary.auto_fixable)}):[/bold]")
-    for c in summary.auto_fixable:
+    console.print(f"\n[bold]Pending auto-fixable ({len(pending_auto)}):[/bold]")
+    for c in pending_auto:
         console.print(f"  • {c.file_path}:{c.line} - {c.suggested_fix or c.body[:50]}")
     
     if not auto:
         if not Confirm.ask("\nApply these fixes?"):
             return False
     
-    # Apply fixes
-    fixes = auto_fixer.apply_fixes(summary.auto_fixable, dry_run=dry_run)
+    # Apply fixes (only pending ones)
+    fixes = auto_fixer.apply_fixes(pending_auto, dry_run=dry_run)
     
     # Show results
     console.print(f"\n[bold]Results:[/bold]")
@@ -393,12 +417,24 @@ def run_pr_fix(pr_id: str, auto: bool = False, dry_run: bool = False, working_di
     successful = [f for f in fixes if f.success]
     if successful and not dry_run:
         # Commit changes
-        if Confirm.ask("\nCommit fixes?"):
+        if auto or Confirm.ask("\nCommit fixes?"):
             msg = auto_fixer.generate_fix_commit_message(fixes)
             git_automation.set_working_dir(working_dir)
             git_automation.commit_changes(pr_id, msg)
             git_automation.push_branch()
             console.print("[green]✓[/green] Fixes committed and pushed")
+            
+            # Reply to comments
+            if auto or Confirm.ask("Reply to PR comments?"):
+                commit_hash = git_automation.get_last_commit_hash()
+                for fix in successful:
+                    reply_body = f"Fixed in commit {commit_hash}: {fix.message}"
+                    pr_review_manager.fetcher.reply_to_comment(
+                        int(pr_id), 
+                        fix.comment.id, 
+                        reply_body
+                    )
+                console.print(f"[green]✓[/green] Replied to {len(successful)} comments")
     
     return True
 

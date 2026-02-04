@@ -9,6 +9,7 @@ Automated workflow: **Jira PBI → TDD Implementation → PR Creation → PR Rev
 - [Configuration](#configuration)
 - [Use Cases](#use-cases)
 - [Commands Reference](#commands-reference)
+- [Orchestra Pattern](#orchestra-pattern)
 - [Troubleshooting](#troubleshooting)
 
 ---
@@ -24,46 +25,100 @@ Automated workflow: **Jira PBI → TDD Implementation → PR Creation → PR Rev
 | ✅ **TODO Manager** | Interactive task tracking per PBI |
 | 🔍 **PR Review** | Analyze PR comments, categorize by complexity |
 | 🔧 **Auto-Fix** | Auto-apply simple PR review fixes |
+| 🎭 **Orchestra Pattern** | Multi-agent workflow with Copilot CLI |
 
 ---
 
 ## 📦 Installation
 
-### Option 1: Install from GitHub (Recommended)
+### Prerequisites
+
+Before installing, ensure you have:
+
+| Requirement | Version | Check Command | Install Guide |
+|-------------|---------|---------------|---------------|
+| Python | 3.10+ | `python --version` | [python.org](https://www.python.org/downloads/) |
+| pip | Latest | `pip --version` | Comes with Python |
+| Git | 2.0+ | `git --version` | [git-scm.com](https://git-scm.com/downloads) |
+| GitHub CLI | Latest | `gh --version` | [cli.github.com](https://cli.github.com/) |
+
+### Step 1: Install GitHub CLI and Authenticate
+
+```bash
+# Windows (winget)
+winget install GitHub.cli
+
+# macOS
+brew install gh
+
+# Linux (Debian/Ubuntu)
+curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg | sudo dd of=/usr/share/keyrings/githubcli-archive-keyring.gpg
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+sudo apt update && sudo apt install gh
+
+# Authenticate (required)
+gh auth login
+```
+
+### Step 2: Install Agentic CLI
 
 ```bash
 # Clone repository
 git clone https://github.com/vndkubi/test-agent.git
 cd test-agent
 
-# Install globally
+# Install globally (editable mode for updates)
 pip install -e .
 
 # Verify installation
 agentic --version
 ```
 
-### Option 2: Install from source
+### Step 3: Get Jira API Token
+
+1. Go to [Atlassian API Tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **"Create API token"**
+3. Name it (e.g., "agentic-cli")
+4. Copy the token (you won't see it again!)
+
+### Step 4: (Optional) Install Copilot CLI for Orchestra Mode
 
 ```bash
-# Clone and install dependencies
-git clone https://github.com/vndkubi/test-agent.git
-cd test-agent
-pip install -r requirements.txt
+# In VSCode terminal, run:
+copilot
 
-# Install as global CLI
+# This installs Copilot CLI via VSCode extension
+# Location: %APPDATA%\Code\User\globalStorage\github.copilot-chat\copilotCli\
+
+# Test it works:
+copilot --version
+```
+
+### Verify Installation
+
+```bash
+# Check all dependencies
+agentic --version          # Should show version number
+gh auth status             # Should show "Logged in to github.com"
+python --version           # Should be 3.10+
+
+# Quick test (without Jira)
+agentic TEST-1 --skip-jira
+```
+
+### Updating
+
+```bash
+cd /path/to/test-agent
+git pull origin main
 pip install -e .
 ```
 
-### Prerequisites
+### Uninstalling
 
-1. **Python 3.10+**
-2. **GitHub CLI** - [Install gh](https://cli.github.com/)
-   ```bash
-   # Authenticate gh
-   gh auth login
-   ```
-3. **Jira API Token** - [Create token](https://id.atlassian.com/manage-profile/security/api-tokens)
+```bash
+pip uninstall agentic
+```
 
 ---
 
@@ -228,6 +283,42 @@ agentic TEST-1 --skip-jira
 agentic PROJ-789 --draft
 ```
 
+### Use Case 8: Launch Copilot Orchestra Mode
+
+**Scenario:** You want Copilot CLI to automatically implement a PBI using the Orchestra multi-agent pattern.
+
+```bash
+# Launch Copilot CLI with auto-generated prompt
+agentic PROJ-123 --copilot
+
+# With skip-jira for testing
+agentic TEST-1 --copilot --skip-jira
+```
+
+**What happens:**
+1. ✅ Fetches PBI details from Jira
+2. ✅ Ensures `.copilot-instructions.md` exists
+3. ✅ Launches Copilot CLI with TDD workflow prompt
+4. ✅ Copilot creates plan → waits for approval → implements phase by phase
+
+### Use Case 9: Initialize Orchestra Agents
+
+**Scenario:** You want to set up Orchestra agents for VSCode Insiders custom chat modes.
+
+```bash
+# Initialize agents in current project
+agentic init
+
+# Or install globally for all projects
+agentic init --global
+```
+
+**Files created:**
+- `.github/agents/Conductor.agent.md` - Main orchestrator
+- `.github/agents/planning-subagent.agent.md` - Planning specialist
+- `.github/agents/implement-subagent.agent.md` - Implementation specialist
+- `.github/agents/code-review-subagent.agent.md` - Review specialist
+
 ---
 
 ## 📖 Commands Reference
@@ -240,8 +331,19 @@ agentic <PBI-KEY> [options]
 Options:
   --skip-jira       Skip Jira operations (for testing)
   --draft           Create PR as draft
+  --copilot         Launch Copilot CLI with Orchestra workflow
   --dir, -d DIR     Project directory (default: current)
   --version, -v     Show version
+```
+
+### Initialize Orchestra Agents
+
+```bash
+agentic init [options]
+
+Options:
+  --global, -g      Install to global VSCode location
+  --dir, -d DIR     Target directory
 ```
 
 ### TODO Manager
@@ -312,6 +414,69 @@ tests/
 
 ---
 
+## 🎭 Orchestra Pattern
+
+The Orchestra Pattern uses multiple AI agents working together for complex implementations.
+
+### How It Works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   🎭 ORCHESTRA PATTERN                      │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│   📋 User Request                                           │
+│        │                                                    │
+│        ▼                                                    │
+│   ┌─────────────┐                                          │
+│   │ 🎼 CONDUCTOR │ ◄── Main orchestrator                   │
+│   └──────┬──────┘                                          │
+│          │                                                  │
+│    ┌─────┼─────┬─────────┐                                 │
+│    ▼     ▼     ▼         ▼                                 │
+│   📐    🔨    🔍        ...                                │
+│ Planning Implement Review                                   │
+│ Agent   Agent   Agent                                       │
+│                                                             │
+│   Each agent: Focused task → Report back → Next agent      │
+│                                                             │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Agent Files
+
+| Agent | Purpose |
+|-------|---------|
+| `Conductor.agent.md` | Orchestrates workflow, delegates to sub-agents |
+| `planning-subagent.agent.md` | Analyzes requirements, creates implementation plan |
+| `implement-subagent.agent.md` | Writes code following TDD principles |
+| `code-review-subagent.agent.md` | Reviews code quality and suggests improvements |
+
+### Using Orchestra Mode
+
+**Option 1: Via Copilot CLI (Recommended)**
+```bash
+agentic PROJ-123 --copilot
+```
+
+**Option 2: Via VSCode Insiders Custom Chat Modes**
+```bash
+# First, initialize agents
+agentic init --global
+
+# Then in VSCode Insiders, use @Conductor in chat
+```
+
+**Option 3: Manual Setup**
+```bash
+# Copy agents to your project
+agentic init
+
+# Open VSCode and use the agents in Copilot Chat
+```
+
+---
+
 ## 🔧 Troubleshooting
 
 ### "Jira connection failed"
@@ -353,6 +518,20 @@ gh pr list
 
 # Use PR number (not branch name)
 agentic pr review 42
+```
+
+### "Copilot CLI not found"
+
+```bash
+# Run copilot once in VSCode terminal to install
+copilot
+
+# If still not found, agentic will look in:
+# Windows: %APPDATA%\Code\User\globalStorage\github.copilot-chat\copilotCli\copilot.ps1
+# macOS/Linux: ~/.config/Code/User/globalStorage/github.copilot-chat/copilotCli/copilot
+
+# Manual test
+powershell -File "$env:APPDATA\Code\User\globalStorage\github.copilot-chat\copilotCli\copilot.ps1" --version
 ```
 
 ### "No .env found"

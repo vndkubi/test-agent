@@ -57,6 +57,12 @@ class GitAutomation:
         success, output = self._run_command(["git", "branch", "--show-current"])
         return output if success else "unknown"
     
+    def get_last_commit_hash(self, short: bool = True) -> str:
+        """Get the last commit hash."""
+        cmd = ["git", "rev-parse", "--short", "HEAD"] if short else ["git", "rev-parse", "HEAD"]
+        success, output = self._run_command(cmd)
+        return output if success else "unknown"
+    
     def get_default_branch(self) -> str:
         """Get the default branch (main or master)."""
         success, output = self._run_command(

@@ -223,11 +223,122 @@ def run_workflow(
     return True
 
 
+def launch_copilot_workflow(pbi_key: str, working_dir: Optional[Path] = None, skip_jira: bool = False):
+    """Launch Copilot CLI with Orchestra workflow for a PBI."""
+    import subprocess
+    import os
+    
+    working_dir = working_dir or Path.cwd()
+    
+    console.print(Panel.fit(
+        "[bold blue]🎭 Launching Copilot Orchestra[/bold blue]",
+        border_style="blue"
+    ))
+    
+    # Step 1: Fetch PBI info
+    console.print("[cyan]→[/cyan] Fetching PBI info...")
+    
+    if skip_jira:
+        pbi_summary = f"Mock PBI {pbi_key}"
+        pbi_description = "Test implementation"
+    else:
+        pbi = jira_connector.fetch_pbi(pbi_key)
+        if not pbi:
+            console.print(f"[red]✗[/red] Could not fetch {pbi_key} from Jira")
+            sys.exit(1)
+        pbi_summary = pbi.summary
+        pbi_description = pbi.description or ""
+    
+    # Step 2: Ensure copilot-instructions.md exists with Orchestra context
+    instructions_file = working_dir / "copilot-instructions.md"
+    orchestra_instructions = f"""# Copilot Instructions
+
+## Development Workflow
+
+You are an AI development assistant following the **Orchestra TDD Workflow**:
+
+1. **Planning Phase**: Analyze requirements, research codebase, create development plan
+2. **Implementation Phase**: For each phase in plan:
+   - Write failing tests FIRST (TDD)
+   - Run tests to confirm they fail
+   - Write minimal code to pass tests
+   - Run tests to confirm they pass
+3. **Review Phase**: Review code quality and test coverage
+4. **Commit Phase**: Generate commit message, wait for user to commit
+
+## Current Task
+
+**PBI**: {pbi_key}
+**Summary**: {pbi_summary}
+
+## Rules
+
+1. Always write tests BEFORE implementation (TDD)
+2. Keep phases small (1-3 files per phase)
+3. Pause for user approval before implementing
+4. Generate conventional commit messages
+5. Document progress in `plans/` directory
+"""
+    
+    # Write or update instructions
+    if instructions_file.exists():
+        console.print(f"[yellow]![/yellow] copilot-instructions.md exists, preserving")
+    else:
+        instructions_file.write_text(orchestra_instructions, encoding='utf-8')
+        console.print(f"[green]✓[/green] Created copilot-instructions.md")
+    
+    # Step 3: Create plans directory
+    plans_dir = working_dir / "plans"
+    plans_dir.mkdir(exist_ok=True)
+    
+    # Step 4: Build the prompt (single line to avoid shell issues)
+    prompt = f"Implement {pbi_key}: {pbi_summary}. Follow TDD workflow: 1) Analyze codebase and create plan in plans/{pbi_key.lower()}-plan.md 2) Wait for my approval 3) Implement phase by phase with tests first. Start with planning phase."
+
+    # Step 5: Launch copilot CLI
+    console.print(f"\n[bold]Launching Copilot CLI...[/bold]")
+    console.print(f"[dim]Prompt: {prompt[:80]}...[/dim]\n")
+    
+    # Find copilot CLI - it's installed via VSCode extension
+    import subprocess as sp
+    import shutil
+    
+    copilot_path = shutil.which("copilot")
+    
+    # If not in PATH, check VSCode extension location
+    if not copilot_path:
+        vscode_copilot = Path(os.environ.get("APPDATA", "")) / "Code" / "User" / "globalStorage" / "github.copilot-chat" / "copilotCli" / "copilot.ps1"
+        if vscode_copilot.exists():
+            copilot_path = str(vscode_copilot)
+    
+    if not copilot_path:
+        console.print("[red]✗[/red] Copilot CLI not found.")
+        console.print("[dim]Run 'copilot' in VSCode terminal first to install[/dim]")
+        sys.exit(1)
+    
+    # Build command - use powershell for .ps1 script on Windows
+    if copilot_path.endswith(".ps1"):
+        cmd = ["powershell", "-ExecutionPolicy", "Bypass", "-File", copilot_path, "-i", prompt, "--model", "claude-sonnet-4.5"]
+    else:
+        cmd = [copilot_path, "-i", prompt, "--model", "claude-sonnet-4.5"]
+    
+    try:
+        os.chdir(working_dir)
+        result = sp.run(cmd)
+        sys.exit(result.returncode)
+    except Exception as e:
+        console.print(f"[red]✗[/red] Failed to launch Copilot: {e}")
+        sys.exit(1)
+
+
 def main():
     """Main entry point."""
     # Check for subcommands first
     if len(sys.argv) > 1:
-        if sys.argv[1] == "todo":
+        if sys.argv[1] == "init":
+            handle_init_command()
+            return  # handle_init_command calls sys.exit
+        
+        elif sys.argv[1] == "todo":
             # Handle todo subcommand
             todo_parser = argparse.ArgumentParser(prog="agentic todo")
             todo_parser.add_argument("pbi_key", help="Jira issue key")
@@ -283,12 +394,23 @@ Config: ~/.agentic/.env or .env in current directory
     )
     
     parser.add_argument(
+        "--copilot", "-c",
+        action="store_true",
+        help="Launch Copilot CLI with Orchestra workflow"
+    )
+    
+    parser.add_argument(
         "--version", "-v",
         action="version",
         version="agentic 1.2.0"
     )
     
     args = parser.parse_args()
+    
+    # If --copilot flag, launch copilot CLI with the workflow
+    if args.copilot:
+        launch_copilot_workflow(args.pbi_key, args.dir, args.skip_jira)
+        return
     
     success = run_workflow(
         pbi_key=args.pbi_key,
@@ -503,6 +625,103 @@ def handle_pr_command():
         console.print(f"Unknown pr command: {action}")
         console.print("Available: review, fix")
         sys.exit(1)
+
+
+def handle_init_command():
+    """Handle init subcommand - copy agent files to project or global location."""
+    import shutil
+    import os
+    
+    parser = argparse.ArgumentParser(
+        prog="agentic init",
+        description="Initialize Orchestra agents for the current project"
+    )
+    parser.add_argument(
+        "--global", "-g",
+        dest="global_install",
+        action="store_true",
+        help="Install agents globally to VSCode User Data (works in all projects)"
+    )
+    parser.add_argument(
+        "--dir", "-d",
+        type=Path,
+        default=None,
+        help="Target directory (default: current directory)"
+    )
+    args = parser.parse_args(sys.argv[2:])
+    
+    console.print(Panel.fit(
+        "[bold blue]🎭 Agentic Orchestra Setup[/bold blue]",
+        border_style="blue"
+    ))
+    
+    # Get source templates directory
+    templates_dir = Path(__file__).parent / "templates" / "agents"
+    
+    if not templates_dir.exists():
+        console.print(f"[red]✗[/red] Templates not found at {templates_dir}")
+        sys.exit(1)
+    
+    agent_files = list(templates_dir.glob("*.agent.md"))
+    
+    if not agent_files:
+        console.print("[red]✗[/red] No agent files found in templates")
+        sys.exit(1)
+    
+    # Determine target directory
+    if args.global_install:
+        # VSCode User Data location
+        if sys.platform == "win32":
+            vscode_dir = Path(os.environ.get("APPDATA", "")) / "Code" / "User" / "prompts"
+            vscode_insiders_dir = Path(os.environ.get("APPDATA", "")) / "Code - Insiders" / "User" / "prompts"
+        elif sys.platform == "darwin":
+            vscode_dir = Path.home() / "Library" / "Application Support" / "Code" / "User" / "prompts"
+            vscode_insiders_dir = Path.home() / "Library" / "Application Support" / "Code - Insiders" / "User" / "prompts"
+        else:  # Linux
+            vscode_dir = Path.home() / ".config" / "Code" / "User" / "prompts"
+            vscode_insiders_dir = Path.home() / ".config" / "Code - Insiders" / "User" / "prompts"
+        
+        # Prefer Insiders if it exists
+        if vscode_insiders_dir.parent.exists():
+            target_dir = vscode_insiders_dir
+            console.print("[cyan]→[/cyan] Installing to VSCode Insiders (global)")
+        else:
+            target_dir = vscode_dir
+            console.print("[cyan]→[/cyan] Installing to VSCode (global)")
+    else:
+        target_dir = (args.dir or Path.cwd())
+        console.print(f"[cyan]→[/cyan] Installing to project: {target_dir}")
+    
+    # Create target directory if needed
+    target_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Also create plans directory for project installs
+    if not args.global_install:
+        plans_dir = (args.dir or Path.cwd()) / "plans"
+        plans_dir.mkdir(exist_ok=True)
+        console.print(f"[green]✓[/green] Created plans/ directory")
+    
+    # Copy agent files
+    console.print(f"\n[bold]Copying {len(agent_files)} agent files:[/bold]")
+    
+    for agent_file in agent_files:
+        target_file = target_dir / agent_file.name
+        shutil.copy2(agent_file, target_file)
+        console.print(f"  [green]✓[/green] {agent_file.name}")
+    
+    # Print success message and usage
+    console.print(Panel.fit(
+        "[green]✓ Orchestra agents installed![/green]\n\n"
+        "[bold]Usage:[/bold]\n"
+        "1. Open VSCode (Insiders recommended)\n"
+        "2. Open GitHub Copilot Chat\n"
+        "3. Click agent dropdown → Select 'Conductor'\n"
+        "4. Start with: 'Implement PBI-123'\n\n"
+        "[dim]Agents: Conductor, planning-subagent, implement-subagent, code-review-subagent[/dim]",
+        border_style="green"
+    ))
+    
+    sys.exit(0)
 
 
 if __name__ == "__main__":

@@ -4,7 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agentic-workflow"
+<<<<<<< Updated upstream
 version = "1.0.0"
+=======
+version = "1.2.0"
+>>>>>>> Stashed changes
 description = "Automated dev workflow: Jira → TDD → PR → Done"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -20,3 +24,6 @@ agentic = "agentic.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["agentic*", "config*"]
+
+[tool.setuptools.package-data]
+agentic = ["templates/agents/*.agent.md"]
